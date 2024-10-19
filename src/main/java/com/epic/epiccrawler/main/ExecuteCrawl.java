@@ -32,9 +32,9 @@ public class ExecuteCrawl {
 
     private static final Long MAX_COMMENT_THREAD = 75L;
     private static final Long MAX_REPLIES_PER_COMMENT_THREAD = 30L;
-    private static final Long TOP_COMMENT_MIN_LIKES_THRESHOLD = 750L;
+    private static final Long TOP_COMMENT_MIN_LIKES_THRESHOLD = 2000L;
 
-    private static final int MAX_CRAWL_COUNT = 7;
+    private static final int MAX_CRAWL_COUNT = 4;
 
     @Autowired
     YouTubeScraper youTubeScraper;
@@ -44,36 +44,43 @@ public class ExecuteCrawl {
         LOG.info("This is an INFO log");
         HashMap<String, JSONArray> commentsMap = new HashMap<>();
         Queue<String> videoQueue = new LinkedList<>();
+
+        //Todo
+        // Add all existing videos from database into this
+        Set<String> allVIds = new HashSet<>();
+
         videoQueue.add("W8r-tXRLazs");
+        allVIds.add("W8r-tXRLazs");
         int crawledCount =1;
 
-        try {
-            YouTube youtubeService = getService();
+        YouTube youtubeService = getService();
 
-            while(!videoQueue.isEmpty()) {
+        while(!videoQueue.isEmpty()) {
+
+            try {
                 String currVideoId = videoQueue.poll();
-                if(commentsMap.containsKey(currVideoId)){
+                if (commentsMap.containsKey(currVideoId)) {
                     continue;
                 }
                 crawledCount++;
                 JSONArray parentJsonObject = getCommentsWithRepliesAsJson(youtubeService, currVideoId);
                 //System.out.println(parentJsonObject.toString(2));  // Pretty print JSON
                 commentsMap.put(currVideoId, parentJsonObject);
-                if(commentsMap.size()>=MAX_CRAWL_COUNT){
+                if (commentsMap.size() >= MAX_CRAWL_COUNT) {
                     break;
                 }
 
-                youTubeScraper.getRelatedVids(currVideoId,videoQueue);
+                youTubeScraper.getRelatedVids(currVideoId, videoQueue, allVIds);
                 //addRelatedVidToQueue(currVideoId, youtubeService, videoQueue);
                 // Print the HashMap
+            }catch(Exception e){
+                e.printStackTrace();
             }
-
-            commentsMap.forEach((vidId, commentsArray) -> System.out.println(vidId + " " + commentsArray.toString(4)));
-
-
-        } catch (IOException e) {
-            e.printStackTrace();
         }
+
+        commentsMap.forEach((vidId, commentsArray) -> System.out.println(vidId + " " + commentsArray.toString(4)));
+
+
     }
 
     private YouTube getService() {
@@ -82,88 +89,93 @@ public class ExecuteCrawl {
                 .build();
     }
 
-    private JSONArray getCommentsWithRepliesAsJson(YouTube youtubeService, String videoId) throws IOException {
+    private JSONArray getCommentsWithRepliesAsJson(YouTube youtubeService, String videoId) {
         JSONArray commentsArray = new JSONArray();  // Initialize JSON array to store filtered comments
 
-        // Fetch the top-level comments ordered by relevance (Top Comments)
-        YouTube.CommentThreads.List request = youtubeService.commentThreads()
-                .list("snippet,replies")
-                .setVideoId(videoId)
-                .setKey(API_KEY)
-                .setMaxResults(MAX_COMMENT_THREAD)  // Set the maximum number of comments to 20
-                .setOrder("relevance");  // Fetch comments ordered by "Top Comments" (relevance)
+        try {
+            // Fetch the top-level comments ordered by relevance (Top Comments)
+            YouTube.CommentThreads.List request = youtubeService.commentThreads()
+                    .list("snippet,replies")
+                    .setVideoId(videoId)
+                    .setKey(API_KEY)
+                    .setMaxResults(MAX_COMMENT_THREAD)  // Set the maximum number of comments to 20
+                    .setOrder("relevance");  // Fetch comments ordered by "Top Comments" (relevance)
 
-        CommentThreadListResponse response = request.execute();
-        List<CommentThread> commentThreads = response.getItems();
+            CommentThreadListResponse response = request.execute();
+            List<CommentThread> commentThreads = response.getItems();
 
-        // Loop through each comment thread (top-level comment)
-        for (CommentThread commentThread : commentThreads) {
-            JSONObject commentJson = new JSONObject();  // Create JSON object for each comment
-            Comment topComment = commentThread.getSnippet().getTopLevelComment();
+            // Loop through each comment thread (top-level comment)
+            for (CommentThread commentThread : commentThreads) {
+                JSONObject commentJson = new JSONObject();  // Create JSON object for each comment
+                Comment topComment = commentThread.getSnippet().getTopLevelComment();
 
             /*if(!topComment.getSnippet().getTextOriginal().contains("Proof that having 3 beautiful women nodding")){
                 continue;
             }*/
-            Long topCommentLikesCount = topComment.getSnippet().getLikeCount();
-            if(topCommentLikesCount<TOP_COMMENT_MIN_LIKES_THRESHOLD){
-                continue;
-            }
-
-            // Get replies (if any) and fetch all replies using pagination
-            List<Comment> allReplies = fetchAllReplies(youtubeService, commentThread);
-
-            if (!allReplies.isEmpty()) {
-                // Sort replies by the number of likes in descending order
-                List<Comment> sortedReplies = allReplies.stream()
-                        .sorted(Comparator.comparingLong(reply -> -reply.getSnippet().getLikeCount()))  // Sort by likes (descending)
-                        .collect(Collectors.toList());
-
-                boolean containsKeyword = false;
-                JSONArray repliesArray = new JSONArray();  // Create JSON array for replies
-
-                // Loop through the sorted replies and stop when a reply has fewer than 50 likes
-                int addedRepliesCount = 0;
-                for (Comment reply : sortedReplies) {
-                    long likeCount = reply.getSnippet().getLikeCount();  // Use long for like count
-                    String replyText = reply.getSnippet().getTextOriginal();
-
-                    // Check if the reply contains any of the specified keywords or emojis
-                    if (KEYWORD_PATTERN.matcher(replyText).find()) {
-                        containsKeyword = true;
-                    }
-
-                    // Stop if the reply has fewer than 50 likes or if 20 replies have been added
-                    if (likeCount >= 50L && addedRepliesCount < MAX_REPLIES_PER_COMMENT_THREAD) {
-                        JSONObject replyJson = new JSONObject();
-                        String replyAuthor = reply.getSnippet().getAuthorDisplayName();
-                        replyJson.put("author", replyAuthor);
-                        replyJson.put("replyText", replyText);
-                        replyJson.put("likes", likeCount);  // Add number of likes for each reply
-                        repliesArray.put(replyJson);  // Add reply to the replies array
-
-                        addedRepliesCount++;
-                    }
-
-                    // Add the reply details to the JSON object
-
+                Long topCommentLikesCount = topComment.getSnippet().getLikeCount();
+                if (topCommentLikesCount < TOP_COMMENT_MIN_LIKES_THRESHOLD) {
+                    continue;
                 }
 
-                // If any reply contains the keywords, add the comment thread to the result
-                if (containsKeyword) {
-                    // Add replies array to the comment JSON object
-                    commentJson.put("replies", repliesArray);
+                // Get replies (if any) and fetch all replies using pagination
+                List<Comment> allReplies = fetchAllReplies(youtubeService, commentThread);
 
-                    // Add the top-level comment details to the JSON object AFTER adding replies
-                    String author = topComment.getSnippet().getAuthorDisplayName();
-                    String commentText = topComment.getSnippet().getTextOriginal();
-                    commentJson.put("author", author);
-                    commentJson.put("commentText", commentText);
-                    commentJson.put("likes", topCommentLikesCount);
+                if (!allReplies.isEmpty()) {
+                    // Sort replies by the number of likes in descending order
+                    List<Comment> sortedReplies = allReplies.stream()
+                            .sorted(Comparator.comparingLong(reply -> -reply.getSnippet().getLikeCount()))  // Sort by likes (descending)
+                            .collect(Collectors.toList());
 
-                    // Add the comment JSON object to the comments array
-                    commentsArray.put(commentJson);
+                    boolean containsKeyword = false;
+                    JSONArray repliesArray = new JSONArray();  // Create JSON array for replies
+
+                    // Loop through the sorted replies and stop when a reply has fewer than 50 likes
+                    int addedRepliesCount = 0;
+                    for (Comment reply : sortedReplies) {
+                        long likeCount = reply.getSnippet().getLikeCount();  // Use long for like count
+                        String replyText = reply.getSnippet().getTextOriginal();
+
+                        // Check if the reply contains any of the specified keywords or emojis
+                        if (KEYWORD_PATTERN.matcher(replyText).find()) {
+                            containsKeyword = true;
+                        }
+
+                        // Stop if the reply has fewer than 50 likes or if 20 replies have been added
+                        if (likeCount >= 50L && addedRepliesCount < MAX_REPLIES_PER_COMMENT_THREAD) {
+                            JSONObject replyJson = new JSONObject();
+                            String replyAuthor = reply.getSnippet().getAuthorDisplayName();
+                            replyJson.put("author", replyAuthor);
+                            replyJson.put("replyText", replyText);
+                            replyJson.put("likes", likeCount);  // Add number of likes for each reply
+                            repliesArray.put(replyJson);  // Add reply to the replies array
+
+                            addedRepliesCount++;
+                        }
+
+                        // Add the reply details to the JSON object
+
+                    }
+
+                    // If any reply contains the keywords, add the comment thread to the result
+                    if (containsKeyword) {
+                        // Add replies array to the comment JSON object
+                        commentJson.put("replies", repliesArray);
+
+                        // Add the top-level comment details to the JSON object AFTER adding replies
+                        String author = topComment.getSnippet().getAuthorDisplayName();
+                        String commentText = topComment.getSnippet().getTextOriginal();
+                        commentJson.put("author", author);
+                        commentJson.put("commentText", commentText);
+                        commentJson.put("likes", topCommentLikesCount);
+
+                        // Add the comment JSON object to the comments array
+                        commentsArray.put(commentJson);
+                    }
                 }
             }
+
+        }catch(IOException e){
+            e.printStackTrace();
         }
 
         return commentsArray;  // Return the array of filtered comments and their replies

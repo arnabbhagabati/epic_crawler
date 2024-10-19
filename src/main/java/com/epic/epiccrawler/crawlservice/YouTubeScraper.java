@@ -14,6 +14,7 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -90,7 +91,7 @@ public class YouTubeScraper {
     }
 
 
-    public void getRelatedVids(String videoId,Queue<String> videoQueue) {
+    public void getRelatedVids(String videoId, Queue<String> videoQueue, Set<String> allVIds) {
 
         String urlStr = "https://www.youtube.com/watch?v="+videoId;
         try {
@@ -125,7 +126,11 @@ public class YouTubeScraper {
 
                 while (matcher.find()) {
                     String nextRelVid = matcher.group(1);  // Extract the video ID (group 1)
-                    videoQueue.add(nextRelVid);
+                    if(!allVIds.contains(nextRelVid)){
+                        videoQueue.add(nextRelVid);
+                        allVIds.add(nextRelVid);
+                    }
+
                 }
 
 
