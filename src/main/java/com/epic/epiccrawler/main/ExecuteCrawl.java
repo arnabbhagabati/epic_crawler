@@ -1,48 +1,75 @@
 package com.epic.epiccrawler.main;
 
+import com.epic.epiccrawler.crawlservice.YouTubeScraper;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.jackson2.JacksonFactory;
-import com.google.api.services.youtube.model.Comment;
-import com.google.api.services.youtube.model.CommentListResponse;
+import com.google.api.services.youtube.model.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.google.api.services.youtube.YouTube;
-import com.google.api.services.youtube.model.CommentThread;
-import com.google.api.services.youtube.model.CommentThreadListResponse;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import static com.epic.epiccrawler.EpicConstants.APPLICATION_NAME;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+
+
 @Component
 public class ExecuteCrawl {
     //private static final Logger LOGGER = Logger.getLogger( ClassName.class.getName() );
     private static final Logger LOG = LoggerFactory.getLogger(ExecuteCrawl.class);
-    private static final Pattern KEYWORD_PATTERN = Pattern.compile("\\b(lmao|lol|lmfao|rofl|😂|🤣|😆|😁)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern KEYWORD_PATTERN = Pattern.compile("(\\b(lol+|lmao+|lmfao+|rofl+|roflmao+|hehe+|haha+|hahaha+|bahaha+|bwahaha+|xD+|:D+|:-D+)\\b|😂|🤣|😆|😹|😄|😁|😅|😜|😝|🤪|🤭|👻)", Pattern.CASE_INSENSITIVE);
+    //Pattern.compile("(\\b(lol+|lmao+|lmfao+|rofl+|roflmao+|hehe+|haha+|hahaha+|bahaha+|bwahaha+|xD+|:D+|:-D+)\\b|😂|🤣|😆|😹|😄|😁|😅|😜|😝|🤪|🤭|😛|🤡|😸|🙃|🥲|🤔|😎|🤷|😏|😬|🤨|🤯|😇|😈|👻)", Pattern.CASE_INSENSITIVE);
+
     private static final String API_KEY = "AIzaSyCj2csNua3EbkajBXlhfCAImkrAldOoFss";
 
     private static final Long MAX_COMMENT_THREAD = 75L;
     private static final Long MAX_REPLIES_PER_COMMENT_THREAD = 30L;
+    private static final Long TOP_COMMENT_MIN_LIKES_THRESHOLD = 750L;
+
+    private static final int MAX_CRAWL_COUNT = 7;
+
+    @Autowired
+    YouTubeScraper youTubeScraper;
 
     public void crawlComments(){
         //LOGGER.log( Level.FINE, "crawling through comments" );
         LOG.info("This is an INFO log");
-        String videoId = "e3yEg15PcGQ";
-
+        HashMap<String, JSONArray> commentsMap = new HashMap<>();
+        Queue<String> videoQueue = new LinkedList<>();
+        videoQueue.add("W8r-tXRLazs");
+        int crawledCount =1;
 
         try {
-
             YouTube youtubeService = getService();
-            JSONArray parentJsonObject = getCommentsWithRepliesAsJson(youtubeService, videoId);
-            System.out.println(parentJsonObject.toString(2));  // Pretty print JSON
+
+            while(!videoQueue.isEmpty()) {
+                String currVideoId = videoQueue.poll();
+                if(commentsMap.containsKey(currVideoId)){
+                    continue;
+                }
+                crawledCount++;
+                JSONArray parentJsonObject = getCommentsWithRepliesAsJson(youtubeService, currVideoId);
+                //System.out.println(parentJsonObject.toString(2));  // Pretty print JSON
+                commentsMap.put(currVideoId, parentJsonObject);
+                if(commentsMap.size()>=MAX_CRAWL_COUNT){
+                    break;
+                }
+
+                youTubeScraper.getRelatedVids(currVideoId,videoQueue);
+                //addRelatedVidToQueue(currVideoId, youtubeService, videoQueue);
+                // Print the HashMap
+            }
+
+            commentsMap.forEach((vidId, commentsArray) -> System.out.println(vidId + " " + commentsArray.toString(4)));
+
 
         } catch (IOException e) {
             e.printStackTrace();
@@ -74,12 +101,12 @@ public class ExecuteCrawl {
             JSONObject commentJson = new JSONObject();  // Create JSON object for each comment
             Comment topComment = commentThread.getSnippet().getTopLevelComment();
 
-            if(!topComment.getSnippet().getTextOriginal().contains("Proof that having 3 beautiful women nodding")){
+            /*if(!topComment.getSnippet().getTextOriginal().contains("Proof that having 3 beautiful women nodding")){
                 continue;
-            }
-
-            if(topComment.getSnippet().getLikeCount()<700L){
-                break;
+            }*/
+            Long topCommentLikesCount = topComment.getSnippet().getLikeCount();
+            if(topCommentLikesCount<TOP_COMMENT_MIN_LIKES_THRESHOLD){
+                continue;
             }
 
             // Get replies (if any) and fetch all replies using pagination
@@ -131,6 +158,7 @@ public class ExecuteCrawl {
                     String commentText = topComment.getSnippet().getTextOriginal();
                     commentJson.put("author", author);
                     commentJson.put("commentText", commentText);
+                    commentJson.put("likes", topCommentLikesCount);
 
                     // Add the comment JSON object to the comments array
                     commentsArray.put(commentJson);
@@ -172,4 +200,34 @@ public class ExecuteCrawl {
 
         return allReplies;
     }
+
+    public void addRelatedVidToQueue(String videoId, YouTube youtubeService,Queue<String> videoQueue) {
+
+        YouTube.Search.List request = null;
+        try {
+            request = youtubeService.search()
+                    .list("snippet")
+                    .setRelatedToVideoId(videoId) // Get related videos by video ID
+                    .setType("video")            // Specify that we're looking for videos
+                    .setMaxResults(20L)           // Set the max number of results to return
+                    .setKey(API_KEY);
+
+
+            // Execute the API request and get the response
+            SearchListResponse response = null;
+            response = request.execute();
+
+
+            // Extract the related video IDs from the response
+            for (SearchResult result : response.getItems()) {
+                String relatedVideoId = result.getId().getVideoId();
+                videoQueue.add(relatedVideoId);
+            }
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+    }
+
 }
